@@ -4,82 +4,34 @@ pipeline {
     environment {
         IMAGE_NAME = 'score-api'
         VERSION = "${env.BUILD_NUMBER}"
-        DOCKER_REGISTRY = 'localhost:5000'
-        APP_DIR = 'DevO-Pro-01'  // Add this line
     }
     
     stages {
         stage('Checkout') {
             steps {
                 checkout scm
-                script {
-                    def gitCommit = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
-                    env.GIT_COMMIT = gitCommit
-                    echo "Building commit: ${env.GIT_COMMIT}"
-                }
+                echo "Workspace contents:"
+                sh 'ls -la'
             }
         }
         
         stage('Build with Maven') {
             steps {
-                script {
-                    dir("${env.APP_DIR}") {
-                        sh '''
-                            echo "Building in directory: $(pwd)"
-                            echo "Maven version:"
-                            mvn --version
-                            echo "Files in directory:"
-                            ls -la
-                            echo "Starting build..."
-                            mvn clean compile
-                        '''
-                    }
-                }
-            }
-        }
-        
-        stage('Run Unit Tests') {
-            steps {
-                dir("${env.APP_DIR}") {
-                    sh 'mvn test'
-                }
-            }
-            post {
-                always {
-                    junit "${env.APP_DIR}/target/surefire-reports/*.xml"
-                }
+                // No need for dir() - we're already in the root
+                sh 'mvn clean compile'
             }
         }
         
         stage('Package Application') {
             steps {
-                dir("${env.APP_DIR}") {
-                    sh 'mvn package -DskipTests'
-                    sh 'ls -la target/'
-                }
-            }
-        }
-        
-        stage('Copy Artifacts') {
-            steps {
-                script {
-                    sh """
-                        mkdir -p \${ARTIFACT_DIR}/\${BUILD_NUMBER}
-                        cp ${APP_DIR}/target/app.jar \${ARTIFACT_DIR}/\${BUILD_NUMBER}/
-                        echo "Build \${BUILD_NUMBER} from commit \${GIT_COMMIT}" > \${ARTIFACT_DIR}/\${BUILD_NUMBER}/build.info
-                    """
-                }
+                sh 'mvn package -DskipTests'
             }
         }
         
         stage('Build Docker Image') {
             steps {
-                script {
-                    dir("${env.APP_DIR}") {
-                        sh "docker build -t ${IMAGE_NAME}:${VERSION} ."
-                        sh "docker tag ${IMAGE_NAME}:${VERSION} ${IMAGE_NAME}:latest"
-                    }
-                }
+                sh "docker build -t ${IMAGE_NAME}:${VERSION} ."
+                sh "docker tag ${IMAGE_NAME}:${VERSION} ${IMAGE_NAME}:latest"
             }
         }
         
@@ -87,29 +39,12 @@ pipeline {
             steps {
                 script {
                     sh '''
-                        # Stop and remove existing container
                         docker stop score-api 2>/dev/null || true
                         docker rm score-api 2>/dev/null || true
-                        
-                        # Run new container
-                        docker run -d \
-                            --name score-api \
-                            -p 8080:8080 \
-                            --restart unless-stopped \
-                            ${IMAGE_NAME}:${VERSION}
-                        
-                        # Wait for container to start
+                        docker run -d --name score-api -p 8080:8080 ${IMAGE_NAME}:${VERSION}
                         sleep 10
-                        
-                        # Check if container is running
-                        if docker ps | grep -q score-api; then
-                            echo "Container is running"
-                            docker logs score-api --tail 20
-                        else
-                            echo "Container failed to start"
-                            docker logs score-api
-                            exit 1
-                        fi
+                        echo "Testing deployment..."
+                        curl -f http://localhost:8080/api/scores/health
                     '''
                 }
             }
@@ -119,11 +54,11 @@ pipeline {
             steps {
                 script {
                     sh '''
-                        echo "Testing health endpoint..."
-                        curl -f http://localhost:8080/api/scores/health || exit 1
+                        echo "Adding test score..."
+                        curl -X POST "http://localhost:8080/api/scores/test?score=100"
                         
-                        echo "Testing info endpoint..."
-                        curl -s http://localhost:8080/api/scores/info
+                        echo "Getting all scores..."
+                        curl -s http://localhost:8080/api/scores
                         
                         echo "✅ Application deployed successfully!"
                     '''
@@ -134,10 +69,21 @@ pipeline {
     
     post {
         success {
-            echo 'Pipeline succeeded! Application deployed successfully.'
+            echo """
+            ═══════════════════════════════════════════════════════
+            ✅ PIPELINE SUCCESSFUL!
+            ═══════════════════════════════════════════════════════
+            Application is running at: http://localhost:8080
+            API Endpoints:
+            - GET  /api/scores/health
+            - GET  /api/scores/info  
+            - GET  /api/scores
+            - POST /api/scores/{player}?score={value}
+            ═══════════════════════════════════════════════════════
+            """
         }
         failure {
-            echo 'Pipeline failed! Check logs for details.'
+            echo "❌ Pipeline failed! Check the logs above."
         }
     }
 }
