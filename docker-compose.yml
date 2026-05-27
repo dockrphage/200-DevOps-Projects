@@ -1,0 +1,14 @@
+# docker-compose.yml (for local testing)
+version: '3.8'
+services:
+  score-api:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/scores/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

@@ -1,76 +1,83 @@
 pipeline {
     agent any
     
-    tools {
-        maven 'maven-3.9'
-    }
-    
     environment {
-        DOCKER_REGISTRY = 'localhost:5000'
         IMAGE_NAME = 'score-api'
         VERSION = "${env.BUILD_NUMBER}"
-        ARTIFACT_DIR = '/var/jenkins_home/artifacts'
+        DOCKER_REGISTRY = 'localhost:5000'
+        APP_DIR = 'DevO-Pro-01'  // Add this line
     }
     
     stages {
-        stage('SCM Checkout') {
+        stage('Checkout') {
             steps {
                 checkout scm
                 script {
                     def gitCommit = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
                     env.GIT_COMMIT = gitCommit
+                    echo "Building commit: ${env.GIT_COMMIT}"
                 }
             }
         }
         
         stage('Build with Maven') {
             steps {
-                sh 'mvn clean compile'
+                script {
+                    dir("${env.APP_DIR}") {
+                        sh '''
+                            echo "Building in directory: $(pwd)"
+                            echo "Maven version:"
+                            mvn --version
+                            echo "Files in directory:"
+                            ls -la
+                            echo "Starting build..."
+                            mvn clean compile
+                        '''
+                    }
+                }
             }
         }
         
         stage('Run Unit Tests') {
             steps {
-                sh 'mvn test'
+                dir("${env.APP_DIR}") {
+                    sh 'mvn test'
+                }
             }
             post {
                 always {
-                    junit 'target/surefire-reports/*.xml'
+                    junit "${env.APP_DIR}/target/surefire-reports/*.xml"
                 }
             }
         }
         
         stage('Package Application') {
             steps {
-                sh 'mvn package -DskipTests'
+                dir("${env.APP_DIR}") {
+                    sh 'mvn package -DskipTests'
+                    sh 'ls -la target/'
+                }
             }
         }
         
         stage('Copy Artifacts') {
             steps {
-                sh '''
-                    mkdir -p ${ARTIFACT_DIR}/${BUILD_NUMBER}
-                    cp target/app.jar ${ARTIFACT_DIR}/${BUILD_NUMBER}/
-                    echo "Build ${BUILD_NUMBER} from commit ${GIT_COMMIT}" > ${ARTIFACT_DIR}/${BUILD_NUMBER}/build.info
-                '''
+                script {
+                    sh """
+                        mkdir -p \${ARTIFACT_DIR}/\${BUILD_NUMBER}
+                        cp ${APP_DIR}/target/app.jar \${ARTIFACT_DIR}/\${BUILD_NUMBER}/
+                        echo "Build \${BUILD_NUMBER} from commit \${GIT_COMMIT}" > \${ARTIFACT_DIR}/\${BUILD_NUMBER}/build.info
+                    """
+                }
             }
         }
         
         stage('Build Docker Image') {
             steps {
                 script {
-                    docker.build("${IMAGE_NAME}:${VERSION}")
-                    docker.build("${IMAGE_NAME}:latest")
-                }
-            }
-        }
-        
-        stage('Push to Registry') {
-            steps {
-                script {
-                    docker.withRegistry("http://${DOCKER_REGISTRY}", 'docker-registry-creds') {
-                        docker.image("${IMAGE_NAME}:${VERSION}").push()
-                        docker.image("${IMAGE_NAME}:latest").push()
+                    dir("${env.APP_DIR}") {
+                        sh "docker build -t ${IMAGE_NAME}:${VERSION} ."
+                        sh "docker tag ${IMAGE_NAME}:${VERSION} ${IMAGE_NAME}:latest"
                     }
                 }
             }
@@ -80,23 +87,29 @@ pipeline {
             steps {
                 script {
                     sh '''
-                        # Stop existing container if running
-                        docker stop score-api || true
-                        docker rm score-api || true
+                        # Stop and remove existing container
+                        docker stop score-api 2>/dev/null || true
+                        docker rm score-api 2>/dev/null || true
                         
                         # Run new container
                         docker run -d \
                             --name score-api \
-                            --network devops-network \
                             -p 8080:8080 \
-                            -e "SPRING_PROFILES_ACTIVE=production" \
-                            -e "HOSTNAME=${HOSTNAME}" \
                             --restart unless-stopped \
-                            ${DOCKER_REGISTRY}/${IMAGE_NAME}:${VERSION}
+                            ${IMAGE_NAME}:${VERSION}
                         
-                        # Wait for health check
+                        # Wait for container to start
                         sleep 10
-                        curl -f http://localhost:8080/api/scores/health
+                        
+                        # Check if container is running
+                        if docker ps | grep -q score-api; then
+                            echo "Container is running"
+                            docker logs score-api --tail 20
+                        else
+                            echo "Container failed to start"
+                            docker logs score-api
+                            exit 1
+                        fi
                     '''
                 }
             }
@@ -105,10 +118,15 @@ pipeline {
         stage('Integration Test') {
             steps {
                 script {
-                    def response = sh(script: '''
+                    sh '''
+                        echo "Testing health endpoint..."
+                        curl -f http://localhost:8080/api/scores/health || exit 1
+                        
+                        echo "Testing info endpoint..."
                         curl -s http://localhost:8080/api/scores/info
-                    ''', returnStdout: true).trim()
-                    echo "Service Info: ${response}"
+                        
+                        echo "✅ Application deployed successfully!"
+                    '''
                 }
             }
         }
@@ -117,13 +135,9 @@ pipeline {
     post {
         success {
             echo 'Pipeline succeeded! Application deployed successfully.'
-            // Optional: Send Slack/Email notification
         }
         failure {
             echo 'Pipeline failed! Check logs for details.'
-        }
-        always {
-            cleanWs()
         }
     }
 }
