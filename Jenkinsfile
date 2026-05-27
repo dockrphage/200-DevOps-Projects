@@ -4,8 +4,8 @@ pipeline {
     environment {
         IMAGE_NAME = 'score-api'
         VERSION = "${env.BUILD_NUMBER}"
-        // Docker internal hostname
-        HOST_URL = 'host.docker.internal'
+        // Docker bridge IP (works on Linux)
+        HOST_IP = '172.17.0.1'
     }
     
     stages {
@@ -62,11 +62,10 @@ pipeline {
                 script {
                     sh '''
                         echo "Testing health endpoint from Jenkins container..."
-                        echo "Using host.docker.internal to reach host machine"
                         
                         for i in 1 2 3 4 5; do
                             echo "Attempt $i..."
-                            if curl -f http://host.docker.internal:8080/api/scores/health; then
+                            if curl -f http://172.17.0.1:8080/api/scores/health; then
                                 echo "✅ Health check passed!"
                                 exit 0
                             fi
@@ -74,9 +73,6 @@ pipeline {
                         done
                         
                         echo "❌ Health check failed after 5 attempts"
-                        echo "Trying with alternative method..."
-                        curl -f http://172.17.0.1:8080/api/scores/health && exit 0
-                        
                         exit 1
                     '''
                 }
@@ -89,18 +85,22 @@ pipeline {
                     sh '''
                         echo ""
                         echo "=== Integration Tests ==="
-                        echo "Running tests against host.docker.internal:8080"
+                        echo "Running tests against 172.17.0.1:8080"
                         
-                        echo "1. Adding test score..."
-                        curl -X POST "http://host.docker.internal:8080/api/scores/jenkins?score=100"
-                        
-                        echo ""
-                        echo "2. Getting all scores..."
-                        curl -s http://host.docker.internal:8080/api/scores
+                        echo "1. Adding test score for player 'jenkins'..."
+                        curl -X POST "http://172.17.0.1:8080/api/scores/jenkins?score=100"
                         
                         echo ""
-                        echo "3. Getting application info..."
-                        curl -s http://host.docker.internal:8080/api/scores/info
+                        echo "2. Adding test score for player 'pipeline'..."
+                        curl -X POST "http://172.17.0.1:8080/api/scores/pipeline?score=200"
+                        
+                        echo ""
+                        echo "3. Getting all scores..."
+                        curl -s http://172.17.0.1:8080/api/scores
+                        
+                        echo ""
+                        echo "4. Getting application info..."
+                        curl -s http://172.17.0.1:8080/api/scores/info
                         
                         echo ""
                         echo "✅ All integration tests passed!"
@@ -118,16 +118,19 @@ pipeline {
             ═══════════════════════════════════════════════════════
             Application is running at: http://localhost:8080
             
-            Test from your browser or terminal:
+            Test the API with these commands:
             
             # Health check
             curl http://localhost:8080/api/scores/health
             
-            # Add a score  
+            # Add a score
             curl -X POST "http://localhost:8080/api/scores/yourname?score=100"
             
             # Get all scores
             curl http://localhost:8080/api/scores
+            
+            # Get app info
+            curl http://localhost:8080/api/scores/info
             ═══════════════════════════════════════════════════════
             """
         }
